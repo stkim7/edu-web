@@ -1,0 +1,241 @@
+<cicd 구축>
+
+1. 구축 서버: 172.17.5.98
+
+2. 계정생성
+	- groupadd ciadmin
+	- useradd -d /home/ciadmin -s /bin/bash -g ciadmin ciadmin
+	- passwd ciadmin (new1234!)
+		
+3. selinux 체크
+	- getenforce : disabled 로 설정 (아닐 경우는 변경해야 함)
+	  변경 시: vi /etc/selinux/config
+	
+4. os 파라미터 설정
+    - /etc/security/limits.conf
+		ciadmin soft nproc 131072
+		ciadmin hard nproc 131072
+		ciadmin soft nofile 307200
+		ciadmin hard nofile 307200
+		ciadmin soft memlock unlimited
+		ciadmin hard memlock unlimited
+	
+	- /etc/sysctl.conf
+		vm.swappiness = 0
+		net.ipv4.ip_forward=1
+		net.ipv4.conf.all.accept_redirects=0
+		net.ipv6.conf.all.accept_redirects=0
+		net.ipv4.conf.all.secure_redirects=0
+		net.ipv4.conf.all.send_redirects=0
+		kernel.nmi_watchdog=1
+		kernel.shmall=4294967296
+		kernel.shmmax=68719476736
+		kernel.shmmni=4096
+		kernel.sem=1000 32000 100 512
+		kernel.msgmax=65536
+		kernel.msgmnb=65536
+		kernel.msgmni=2878
+		kernel.sysrq=0
+		kernel.core_uses_pid=1
+		vm.vfs_cache_pressure=10000
+		vm.max_map_count=262144
+		net.core.rmem_default=33554432
+		net.core.rmem_max=33554432
+		net.core.wmem_default=33554432
+		net.core.wmem_max=33554432
+		net.core.optmem_max=33554432
+		net.core.somaxconn=65535
+		net.core.netdev_max_backlog=3000
+		net.ipv4.tcp_mem=10000000 10000000 10000000
+		net.ipv4.tcp_rmem=10000000 10000000 10000000
+		net.ipv4.tcp_wmem=10000000 10000000 10000000
+		net.ipv4.tcp_keepalive_time=20
+		net.ipv4.tcp_keepalive_intvl=15
+		net.ipv4.tcp_keepalive_probes=5
+		net.ipv4.tcp_fin_timeout=30
+		net.ipv4.ip_local_port_range=10000 65500
+		net.ipv4.tcp_retries1=3
+		net.ipv4.tcp_retries2=3
+		net.ipv4.tcp_rfc1337=0
+		net.ipv4.tcp_max_syn_backlog=8192
+		net.ipv4.tcp_moderate_rcvbuf=1
+		net.ipv4.tcp_congestion_control=cubic
+		net.ipv4.tcp_sack=1
+		net.ipv4.tcp_syn_retries=2
+		net.ipv4.tcp_syncookies=1
+		net.ipv4.tcp_timestamps=1
+		net.ipv4.tcp_window_scaling=1
+		net.ipv4.tcp_orphan_retries=0
+		net.ipv4.conf.default.rp_filter=1
+		net.ipv4.conf.default.accept_source_route=0
+		fs.file-max=8000000
+		fs.aio-max-nr=65536
+		vm.overcommit_memory=1
+
+5. java 1.8 설치 (빌드용)
+	yum install java-1.8.0-openjdk-devel.x86_64
+	
+6. nexus 설치
+	- download
+		. wget https://download.sonatype.com/nexus/3/latest-unix.tar.gz
+	
+	- 압축해제
+		. tar xvfz latest-unix.tar.gz
+	
+	- engine 디렉토리 생성
+		. mkdir /cicdapp
+		
+	- 압축해제 디렉토리 move
+		. mv nexus-3.43.0-01 /cicdapp
+		
+	- config 설정 
+		. vi /cicdapp/nexus-3.36.0-01/etc/nexus-default.properties
+			application-port=8085
+			application-host=0.0.0.0
+			nexus-args=${jetty.etc}/jetty.xml,${jetty.etc}/jetty-http.xml,${jetty.etc}/jetty-   requestlog.xml
+				nexus-context-path=/
+   
+			# Nexus section
+			nexus-edition=nexus-oss-edition
+			nexus-features=\
+			nexus-oss-feature
+   
+		nexus.hazelcast.discovery.isEnabled=true
+     
+		. vi /cicdapp/nexus-3.43.0-01/bin/nexus.vmoptions (주요 파라미터만 기술)
+			-Xms2703m
+			-Xmx2703m
+			--XX:LogFile=/app/nexus-3.43.0-01/sonatype-work/nexus3/log/jvm.log
+			-Dkaraf.data=/app/nexus-3.43.0-01/sonatype-work/sonatype-work/nexus3 (절대 경로 넣어야 함)
+			-Dkaraf.log=/app/nexus-3.43.0-01/sonatype-work/sonatype-work/nexus3/log (절대 경로 넣어야 함)
+			-Djava.io.tmpdir=/app/nexus-3.43.0-01/sonatype-work//nexus3/tmp (절대 경로 넣어야 함)
+   
+   - 서비스 파일 작성
+		sudo vi /etc/systemd/system/nexus.service
+			[Unit]
+			Description=nexus service
+			After=network.target
+   
+			[Service]
+			Type=forking
+			LimitNOFILE=65536
+			ExecStart=/cicdapp/nexus-3.43.0-01/bin/nexus start (절대 경로 넣어야 함)
+			ExecStop=/cicdapp/nexus-3.43.0-01/bin/nexus stop (절대 경로 넣어야 함)
+			User=ciadmin
+			Restart=on-abort
+			TimeoutSec=600
+   
+			[Install]
+			WantedBy=multi-user.target
+     
+   - 서비스 enable 및 기동
+       
+		sudo systemctl enable nexus.service
+		sudo systemctl start nexus
+		
+	- 접속 url: http://172.17.5.98:8085/
+	
+	- 초기 패스워드 확인: /data/sonatype-work/nexus3/admin.password
+	
+	- 패스워드 변경: admin / new1234!
+	 
+7. jenkins 설치
+	- jenkins yum repository 설정
+		wget --no-check-certificate -O /etc/yum.repos.d/jenkins.repo https://pkg.jenkins.io/redhat-stable/jenkins.repo
+   
+   - key import
+		rpm --import https://pkg.jenkins.io/redhat-stable/jenkins.io.key
+        
+   - install jenkins
+		sudo yum install jenkins
+   
+   - 서비스 파일 수정
+     sudo vi /usr/lib/systemd/system/jenkins.service
+       Environment="JAVA_HOME=/usr/lib/jvm/java-11-openjdk-11.0.17.0.8-2.el7_9.x86_64"
+       Environment="JENKINS_PORT=8088"
+       Environment="JAVA_OPTS=-Djava.awt.headless=true -Xms512m -Xmx2048m"
+       
+   - 서비스 enable 및 기동
+     sudo systemctl daemon-reload
+     sudo systemctl enable jenkins
+     sudo systemctl start jenkins
+
+   - 접속 url: http://172.17.5.98:8088
+   
+   - 초기 패스워드 확인: /var/lib/jenkins/secrets/initialAdminPassword
+   
+   - 패스워드 변경: admin / new1234!
+   
+  
+8. gitlab 설치
+    - gitlab 포트 리스트
+	   tcp        0      0 127.0.0.1:8150          0.0.0.0:*               LISTEN      7951/gitlab-kas
+		tcp        0      0 127.0.0.1:8087          0.0.0.0:*               LISTEN      8031/puma 5.6.5 
+		tcp        0      0 127.0.0.1:8151          0.0.0.0:*               LISTEN      7951/gitlab-kas
+		tcp        0      0 127.0.0.1:8153          0.0.0.0:*               LISTEN      7951/gitlab-kas
+		tcp        0      0 127.0.0.1:8154          0.0.0.0:*               LISTEN      7951/gitlab-kas
+		tcp        0      0 127.0.0.1:8155          0.0.0.0:*               LISTEN      7951/gitlab-kas
+		tcp        0      0 0.0.0.0:8060            0.0.0.0:*               LISTEN      7980/nginx: master
+		tcp        0      0 127.0.0.1:9121          0.0.0.0:*               LISTEN      8042/redis_exporter
+		tcp        0      0 127.0.0.1:9090          0.0.0.0:*               LISTEN      8019/prometheus
+		tcp        0      0 127.0.0.1:9187          0.0.0.0:*               LISTEN      7997/postgres_expor
+		tcp        0      0 127.0.0.1:9093          0.0.0.0:*               LISTEN      7823/alertmanager
+		tcp        0      0 127.0.0.1:9100          0.0.0.0:*               LISTEN      7989/node_exporter
+		tcp        0      0 127.0.0.1:9229          0.0.0.0:*               LISTEN      7961/gitlab-workhor
+		tcp        0      0 0.0.0.0:8081            0.0.0.0:*               LISTEN      7980/nginx: master
+		tcp6       0      0 :::9094                 :::*                    LISTEN      7823/alertmanager
+		
+
+	- gitlab-ce yum repository 설정
+		curl -sS https://packages.gitlab.com/install/repositories/gitlab/gitlab-ce/script.rpm.sh | sudo bash
+	  
+	- gitlab-ce install
+		sudo yum install gitlab-ce
+		
+	- 환경 설정
+		sudo vi /etc/gitlab/gitlab.rb
+			external_url 'http://172.17.5.98:8081'
+				git_data_dirs({
+					"default" => {
+					"path" => "/data/git-data"
+				}
+			})
+			puma['port'] = 8087
+			
+			nginx['enable'] = true
+			nginx['client_max_body_size'] = '250m'
+			gitlab_rails['gitlab_default_projects_features_builds'] = false
+			
+	- config 반영
+		sudo gitlab-ctl reconfigure
+		
+	- 서비스 기동 / 중지 / 재시작
+		gitlab-ctl start/stop/restart
+		
+	
+	- 접속 url: http://172.17.5.98:8081
+	
+	- 초기 패스워드 확인
+		sudo cat /etc/gitlab/initial_root_password  | grep Password
+		
+	- 패스워드 변경 
+		root / new1234!
+		
+9. maven 설치
+	- download: 
+		wget --no-check-certificate https://dlcdn.apache.org/maven/maven-3/3.8.6/binaries/apache-maven-3.8.6-bin.zip
+		
+	- 압축해제
+		unzip apache-maven-3.8.6-bin.zip
+
+	- engine 디렉토리로 이동
+		sudo mv apache-maven-3.8.6 /cicdapp
+	
+ 
+			
+		
+	
+	
+	
+		
+	
