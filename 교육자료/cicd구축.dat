@@ -142,12 +142,12 @@
 	- sudo mkdir -p /app
 	- sudo mv nexus-3.58.1-02 /app
 	- config 설정
-	     vi /app/nexus-3.43.0-01/etc/nexus-default.properties
+	     vi /app/nexus-3.58.0-01/etc/nexus-default.properties
 			application-port=8085
 			nexus-edition=nexus-oss-edition			
 				nexus-features=\			
 				nexus-oss-feature
-		vi /app/nexus-3.43.0-01/bin/nexus.vmoptions
+		vi /app/nexus-3.58.0-01/bin/nexus.vmoptions
           -Xms2703m
 		  -Xmx2703m
           -sonatype-work 경로 지정
@@ -164,7 +164,7 @@
 	Type=forking
 	LimitNOFILE=65536
 	ExecStart=/app/nexus-3.58.1-02/bin/nexus start
-	ExecStop=/nexus-3.58.1-02/bin/bin/nexus stop
+	ExecStop=/app/nexus-3.58.1-02/bin/nexus stop
 	Group=cmadmin
 	User=cmadmin
 	Restart=on-abort
@@ -178,6 +178,10 @@
     sudo systemctl enable nexus.service		
     sudo systemctl start nexus
 	
+	
+export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-11.0.19.0.7-1.el7_9.x86_64
+
+
 9. jenkins 설치
 	
     wget --no-check-certificate -O /etc/yum.repos.d/jenkins.repo https://pkg.jenkins.io/redhat-stable/jenkins.repo
@@ -206,33 +210,24 @@ import jenkins.model.*
 import hudson.*
 import hudson.model.*
 import com.cloudbees.plugins.credentials.*
-import java.net.*
-import javax.net.ssl.*
-import java.security.cert.X509Certificate
 import groovy.json.JsonSlurper
 
-gitlabUrl = "https://gitlab.wise.net:8081"
-projectId = 1
+gitlabUrl = "http://gitlab.ftbs.com:10001/"
+projectId = 11
 
 try {
-    ignoreSSL()
     accessToken = getGitlabAccToken()
 
     if(accessToken == null || accessToken.trim().length() == 0) {
         throw new Exception("Gitlab access token이 없습니다. \
-            (Jenkins credential: GITLAB_ACCESS_TOKEN)")
+            (Jenkins credential: GITLAB_ACC_TOKEN)")
     }
 
     lastBuiltVersion = getLastBuiltVersion(accessToken )
 
     return """
         마지막 빌드 버전 (Gitlab tag 기준) : <b>${lastBuiltVersion}</b><br/>
-        <input style="zoom:1.4;" type="checkbox" name="value" />
         <input type="hidden" name="value" value="${lastBuiltVersion}" />
-
-        동일 버전으로 빌드 시 체크 하세요. <br/><br/>
-        *** 해당 버전을 서버 배포 후에는 동일 버전으로 빌드하지 마시기 바랍니다. <br/>
-             동일 버전으로 빌드 시 기존 버전의 이미지가 Overwrite됩니다. <br/><br/>
     """
 } catch (Exception ex) {
     errorMsg = ex.toString()
@@ -248,7 +243,7 @@ def getGitlabAccToken() {
     )
 
     for (cred in jenkinsCredentials) {
-        if(cred.id == "GITLAB_ACCESS_TOKEN") {
+        if(cred.id == "GITLAB_ACC_TOKEN") {
             return cred.password.toString()
         }
     }
@@ -256,28 +251,11 @@ def getGitlabAccToken() {
     return null
 }
 
-def ignoreSSL() {
-    def nullTrustManager = [
-        checkClientTrusted: { chain, authType ->  },
-        checkServerTrusted: { chain, authType ->  },
-        getAcceptedIssuers: { null }
-    ]
-
-    def nullHostnameVerifier = [
-        verify: { hostname, session -> true }
-    ]
-
-    SSLContext sc = SSLContext.getInstance("SSL")
-    sc.init(null, [nullTrustManager as X509TrustManager] as TrustManager[], null)
-    HttpsURLConnection.setDefaultSSLSocketFactory(sc.getSocketFactory())
-    HttpsURLConnection.setDefaultHostnameVerifier(nullHostnameVerifier as HostnameVerifier)
-}
-
 def getLastBuiltVersion(accessToken) {
     if(gitlabUrl.endsWith('/')) {
-        gitlabUrl += String.format("api/v4/projects/%s/repository/tags?search=v", projectId)
+        gitlabUrl += String.format("api/v4/projects/%s/repository/tags?search=ftbs-api-v", projectId)
     } else {
-        gitlabUrl += String.format("/api/v4/projects/%s/repository/tags?search=v", projectId)
+        gitlabUrl += String.format("/api/v4/projects/%s/repository/tags?search=ftbs-api-v", projectId)
     }
     
     http = new URL(gitlabUrl).openConnection()
@@ -293,7 +271,7 @@ def getLastBuiltVersion(accessToken) {
     response = new JsonSlurper().parseText(http.inputStream.getText("UTF-8"))
 
     if(response.size() > 0) {
-        return response[0].name
+        return response[0].name.replace('ftbs-api-', '')
     } else {
         return "v0.0.0"
     }
@@ -324,7 +302,7 @@ return """
     <b>${msg} : &nbsp;</b> 
     <select name="value">
          ${optionStr}
-     </select> <br/><br/>
+     </select> <br/><br/><br/>
      *** 버전 정책 (vX.Y.Z) : ex) v1.0.0<br/>
      X: major (대규모 업데이트), Y: minor (정기배포), Z: patch (수시배포 및 패치)
 """
@@ -338,93 +316,4 @@ def getNextVersion(lastVersion) {
     nextVersion.add( String.format("v%s.%s.%s", Integer.parseInt(version[0]) + 1, 0, 0) )
 
     return nextVersion 
-}
-
-
-
--- pipeline
-
-pipeline {
-    agent any
-    
-    environment {
-        NEXUS_CRED = credentials('NEXUS_CREDENTIAL')
-        JAVA_HOME = '/usr/lib/jvm/java-17-openjdk-17.0.7.0.7-3.el8.x86_64'
-        GRADLE_HOME = '/app/gradle-8.2'
-        PATH="${env.JAVA_HOME}/bin:${env.GRADLE_HOME}/bin:${env.PATH}"
-    }
-
-    stages {
-        stage('Clone') {
-            steps {
-                script {
-                    env.sameVersion=env.Check_Version.split(",")[0].trim()
-                    env.NexusVersion=env.Build_Version.toLowerCase().replace("v", "")
-
-                    cleanWs()
-                }
-                
-                git branch: 'release', credentialsId: 'GITLAB_CREDENTIAL', 
-	               url: 'https://gitlab.wise.net:8081/wise/backend/devpro-ms-template.git'
-            }
-        }
-        
-        stage('Build source') {
-            steps {
-                sh '''
-                set +x
-                gradle build
-                '''
-            }
-        }
-        
-        stage('Publish to Nexus') {
-            steps {
-                sh '''
-                    set +x
-                    cp ./build/libs/devpro-ms-template-1.0.0.jar ./devpro-ms-template.jar
-                    tar cvf devpro-ms-template.tar devpro-ms-template.jar devpro*.db
-                '''
-                
-                nexusArtifactUploader(
-                    nexusVersion: 'nexus3',
-                    protocol: 'http',
-                    nexusUrl: 'nexus.wise.net:8085',
-                    groupId: 'net.wise',
-                    version: env.NexusVersion,
-                    repository: 'maven-releases',
-                    credentialsId: 'NEXUS_CREDENTIAL',
-                    artifacts: [
-                        [artifactId: 'devpro-ms-template',
-                         classifier: '',
-                         file: 'devpro-ms-template.tar',
-                         type: 'tar']
-                    ]
-                )
-            }
-        }
-        
-        stage('Merge source and tagging') {
-            steps {
-                sh '''
-                    set +x
-                    git checkout -b master
-                    git pull origin master
-                    git merge release
-                    git push origin master
-                    
-                    if [ $sameVersion == true ];
-                    then
-                        git tag -d "$Build_Version"
-                        git push --delete origin "$Build_Version"
-                        
-                    fi
-                       
-                    git tag -a "$Build_Version" -m "tagged by jenkins"
-                    git push origin "$Build_Version"
-                '''
-            }
-        }
-        
-    }
 }
