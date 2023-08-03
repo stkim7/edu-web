@@ -135,3 +135,296 @@
 
 	- group > 계정 > 프로젝트 생성
 	- 프로젝트 업로드
+	
+8. nexus 설치
+	- wget https://download.sonatype.com/nexus/3/latest-unix.tar.gz
+	- tar xvfz latest-unix.tar.gz
+	- sudo mkdir -p /app
+	- sudo mv nexus-3.58.1-02 /app
+	- config 설정
+	     vi /app/nexus-3.43.0-01/etc/nexus-default.properties
+			application-port=8085
+			nexus-edition=nexus-oss-edition			
+				nexus-features=\			
+				nexus-oss-feature
+		vi /app/nexus-3.43.0-01/bin/nexus.vmoptions
+          -Xms2703m
+		  -Xmx2703m
+          -sonatype-work 경로 지정
+		  
+	서비스 생성
+    sudo vi /usr/lib/systemd/system/nexus.service
+
+	[Unit]
+	Description=nexus service
+	After=network.target
+
+	[Service]
+	Environment="JAVA_HOME=/usr/lib/jvm/jdk-17"
+	Type=forking
+	LimitNOFILE=65536
+	ExecStart=/app/nexus-3.58.1-02/bin/nexus start
+	ExecStop=/nexus-3.58.1-02/bin/bin/nexus stop
+	Group=cmadmin
+	User=cmadmin
+	Restart=on-abort
+	TimeoutSec=600
+
+	[Install]
+	WantedBy=multi-user.target
+
+
+	서비스 기동
+    sudo systemctl enable nexus.service		
+    sudo systemctl start nexus
+	
+9. jenkins 설치
+	
+    wget --no-check-certificate -O /etc/yum.repos.d/jenkins.repo https://pkg.jenkins.io/redhat-stable/jenkins.repo
+    
+	sudo rpm --import https://pkg.jenkins.io/redhat-stable/jenkins.io-2023.key
+ 
+	yum install jenkins
+	
+	서비스 파일 수정 (sudo vi /usr/lib/systemd/system/jenkins.service)
+    Environment="JAVA_HOME=/usr/lib/jvm/java-11-openjdk-11.0.19.0.7-1.el7_9.x86_64"           
+    Environment="JENKINS_PORT=8088"       
+    Environment="JAVA_OPTS=-Djava.awt.headless=true -Xms512m -Xmx2048m"
+	 
+	서비스 기동 및 중지
+    sudo systemctl daemon-reload     
+    sudo systemctl enable jenkins     
+    sudo systemctl start Jenkins
+	
+10. jenkins 파이프라인
+
+
+-- Check_Version
+
+import jenkins.*
+import jenkins.model.* 
+import hudson.*
+import hudson.model.*
+import com.cloudbees.plugins.credentials.*
+import java.net.*
+import javax.net.ssl.*
+import java.security.cert.X509Certificate
+import groovy.json.JsonSlurper
+
+gitlabUrl = "https://gitlab.wise.net:8081"
+projectId = 1
+
+try {
+    ignoreSSL()
+    accessToken = getGitlabAccToken()
+
+    if(accessToken == null || accessToken.trim().length() == 0) {
+        throw new Exception("Gitlab access token이 없습니다. \
+            (Jenkins credential: GITLAB_ACCESS_TOKEN)")
+    }
+
+    lastBuiltVersion = getLastBuiltVersion(accessToken )
+
+    return """
+        마지막 빌드 버전 (Gitlab tag 기준) : <b>${lastBuiltVersion}</b><br/>
+        <input style="zoom:1.4;" type="checkbox" name="value" />
+        <input type="hidden" name="value" value="${lastBuiltVersion}" />
+
+        동일 버전으로 빌드 시 체크 하세요. <br/><br/>
+        *** 해당 버전을 서버 배포 후에는 동일 버전으로 빌드하지 마시기 바랍니다. <br/>
+             동일 버전으로 빌드 시 기존 버전의 이미지가 Overwrite됩니다. <br/><br/>
+    """
+} catch (Exception ex) {
+    errorMsg = ex.toString()
+
+    return """
+        <b> 오류: ${errorMsg} </b>
+    """
+}
+
+def getGitlabAccToken() {
+    jenkinsCredentials = CredentialsProvider.lookupCredentials(
+        Credentials.class, Jenkins.instance, null, null
+    )
+
+    for (cred in jenkinsCredentials) {
+        if(cred.id == "GITLAB_ACCESS_TOKEN") {
+            return cred.password.toString()
+        }
+    }
+
+    return null
+}
+
+def ignoreSSL() {
+    def nullTrustManager = [
+        checkClientTrusted: { chain, authType ->  },
+        checkServerTrusted: { chain, authType ->  },
+        getAcceptedIssuers: { null }
+    ]
+
+    def nullHostnameVerifier = [
+        verify: { hostname, session -> true }
+    ]
+
+    SSLContext sc = SSLContext.getInstance("SSL")
+    sc.init(null, [nullTrustManager as X509TrustManager] as TrustManager[], null)
+    HttpsURLConnection.setDefaultSSLSocketFactory(sc.getSocketFactory())
+    HttpsURLConnection.setDefaultHostnameVerifier(nullHostnameVerifier as HostnameVerifier)
+}
+
+def getLastBuiltVersion(accessToken) {
+    if(gitlabUrl.endsWith('/')) {
+        gitlabUrl += String.format("api/v4/projects/%s/repository/tags?search=v", projectId)
+    } else {
+        gitlabUrl += String.format("/api/v4/projects/%s/repository/tags?search=v", projectId)
+    }
+    
+    http = new URL(gitlabUrl).openConnection()
+    http.setRequestMethod("GET")
+    http.setRequestProperty("PRIVATE-TOKEN", accessToken)
+    
+    resCode = http.getResponseCode()
+
+    if (resCode < 200 || resCode >=300) {
+        throw new Exception(http.getErrorStream().text)
+    }
+  
+    response = new JsonSlurper().parseText(http.inputStream.getText("UTF-8"))
+
+    if(response.size() > 0) {
+        return response[0].name
+    } else {
+        return "v0.0.0"
+    }
+}
+	
+	
+	
+-- Build_Version
+token = Check_Version.split(",")
+
+buildVersion = []
+msg = ""
+
+if(token.size() == 2) {
+   buildVersion.add(token[1])
+   msg = "동일 버전으로 빌드됩니다"
+} else if(token.size() == 1) {
+    buildVersion = getNextVersion(token[0])
+    msg = "빌드 버전을 선택하세요"
+}
+
+optionStr = ""
+for(ver in buildVersion) {
+    optionStr += """<option value='${ver}'>${ver}</option>"""
+}
+
+return """
+    <b>${msg} : &nbsp;</b> 
+    <select name="value">
+         ${optionStr}
+     </select> <br/><br/>
+     *** 버전 정책 (vX.Y.Z) : ex) v1.0.0<br/>
+     X: major (대규모 업데이트), Y: minor (정기배포), Z: patch (수시배포 및 패치)
+"""
+
+def getNextVersion(lastVersion) {
+    nextVersion = []
+    version = lastVersion.toLowerCase().replace("v", "").split("\\.")
+
+    nextVersion.add( String.format("v%s.%s.%s", version[0], version[1], Integer.parseInt(version[2]) + 1) )
+    nextVersion.add( String.format("v%s.%s.%s", version[0], Integer.parseInt(version[1]) + 1, 0) )
+    nextVersion.add( String.format("v%s.%s.%s", Integer.parseInt(version[0]) + 1, 0, 0) )
+
+    return nextVersion 
+}
+
+
+
+-- pipeline
+
+pipeline {
+    agent any
+    
+    environment {
+        NEXUS_CRED = credentials('NEXUS_CREDENTIAL')
+        JAVA_HOME = '/usr/lib/jvm/java-17-openjdk-17.0.7.0.7-3.el8.x86_64'
+        GRADLE_HOME = '/app/gradle-8.2'
+        PATH="${env.JAVA_HOME}/bin:${env.GRADLE_HOME}/bin:${env.PATH}"
+    }
+
+    stages {
+        stage('Clone') {
+            steps {
+                script {
+                    env.sameVersion=env.Check_Version.split(",")[0].trim()
+                    env.NexusVersion=env.Build_Version.toLowerCase().replace("v", "")
+
+                    cleanWs()
+                }
+                
+                git branch: 'release', credentialsId: 'GITLAB_CREDENTIAL', 
+	               url: 'https://gitlab.wise.net:8081/wise/backend/devpro-ms-template.git'
+            }
+        }
+        
+        stage('Build source') {
+            steps {
+                sh '''
+                set +x
+                gradle build
+                '''
+            }
+        }
+        
+        stage('Publish to Nexus') {
+            steps {
+                sh '''
+                    set +x
+                    cp ./build/libs/devpro-ms-template-1.0.0.jar ./devpro-ms-template.jar
+                    tar cvf devpro-ms-template.tar devpro-ms-template.jar devpro*.db
+                '''
+                
+                nexusArtifactUploader(
+                    nexusVersion: 'nexus3',
+                    protocol: 'http',
+                    nexusUrl: 'nexus.wise.net:8085',
+                    groupId: 'net.wise',
+                    version: env.NexusVersion,
+                    repository: 'maven-releases',
+                    credentialsId: 'NEXUS_CREDENTIAL',
+                    artifacts: [
+                        [artifactId: 'devpro-ms-template',
+                         classifier: '',
+                         file: 'devpro-ms-template.tar',
+                         type: 'tar']
+                    ]
+                )
+            }
+        }
+        
+        stage('Merge source and tagging') {
+            steps {
+                sh '''
+                    set +x
+                    git checkout -b master
+                    git pull origin master
+                    git merge release
+                    git push origin master
+                    
+                    if [ $sameVersion == true ];
+                    then
+                        git tag -d "$Build_Version"
+                        git push --delete origin "$Build_Version"
+                        
+                    fi
+                       
+                    git tag -a "$Build_Version" -m "tagged by jenkins"
+                    git push origin "$Build_Version"
+                '''
+            }
+        }
+        
+    }
+}
