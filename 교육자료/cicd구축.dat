@@ -253,9 +253,9 @@ def getGitlabAccToken() {
 
 def getLastBuiltVersion(accessToken) {
     if(gitlabUrl.endsWith('/')) {
-        gitlabUrl += String.format("api/v4/projects/%s/repository/tags?search=ftbs-api-v", projectId)
+        gitlabUrl += String.format("api/v4/projects/%s/repository/tags?search=v", projectId)
     } else {
-        gitlabUrl += String.format("/api/v4/projects/%s/repository/tags?search=ftbs-api-v", projectId)
+        gitlabUrl += String.format("/api/v4/projects/%s/repository/tags?search=v", projectId)
     }
     
     http = new URL(gitlabUrl).openConnection()
@@ -316,4 +316,89 @@ def getNextVersion(lastVersion) {
     nextVersion.add( String.format("v%s.%s.%s", Integer.parseInt(version[0]) + 1, 0, 0) )
 
     return nextVersion 
+}
+
+
+
+pipeline {
+    agent any
+    
+    environment {
+        JAVA_HOME = '/usr/lib/jvm/java-17-openjdk-17.0.7.0.7-3.el8.x86_64'
+        PATH="${env.JAVA_HOME}/bin:${env.PATH}"
+    }
+
+    stages {
+        stage('Clone') {
+            steps {
+                script {
+                    env.sameVersion=env.Check_Version.split(",")[0].trim()
+                    env.NexusVersion=env.Build_Version.toLowerCase().replace("v", "")
+
+                    cleanWs()
+                }
+                
+                git branch: 'release', credentialsId: 'GITLAB_CREDENTIAL', 
+	               url: 'https://gitlab.wise.net:8081/wise/backend/devpro-ms-template.git'
+            }
+        }
+        
+        stage('Build source') {
+            steps {
+                sh '''
+                set +x
+                gradle build
+                '''
+            }
+        }
+        
+        stage('Publish to Nexus') {
+            steps {
+                sh '''
+                    set +x
+                    cp ./build/libs/devpro-ms-template-1.0.0.jar ./devpro-ms-template.jar
+                    tar cvf devpro-ms-template.tar devpro-ms-template.jar devpro*.db
+                '''
+                
+                nexusArtifactUploader(
+                    nexusVersion: 'nexus3',
+                    protocol: 'http',
+                    nexusUrl: 'nexus.wise.net:8085',
+                    groupId: 'net.wise',
+                    version: env.NexusVersion,
+                    repository: 'maven-releases',
+                    credentialsId: 'NEXUS_CREDENTIAL',
+                    artifacts: [
+                        [artifactId: 'devpro-ms-template',
+                         classifier: '',
+                         file: 'devpro-ms-template.tar',
+                         type: 'tar']
+                    ]
+                )
+            }
+        }
+        
+        stage('Merge source and tagging') {
+            steps {
+                sh '''
+                    set +x
+                    git checkout -b master
+                    git pull origin master
+                    git merge release
+                    git push origin master
+                    
+                    if [ $sameVersion == true ];
+                    then
+                        git tag -d "$Build_Version"
+                        git push --delete origin "$Build_Version"
+                        
+                    fi
+                       
+                    git tag -a "$Build_Version" -m "tagged by jenkins"
+                    git push origin "$Build_Version"
+                '''
+            }
+        }
+        
+    }
 }
