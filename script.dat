@@ -1,0 +1,15 @@
+nexusArtifactUploader(
+                    nexusVersion: 'nexus3',
+                    protocol: 'http',
+                    nexusUrl: 'nexus.wise.net:8085',
+                    groupId: 'net.wise',
+                    version: env.Artifact_Version,
+                    repository: 'maven-releases',
+                    credentialsId: 'nexus_admin_cred',
+                    artifacts: [
+                        [artifactId: 'devpro-ms-template',
+                         classifier: '',
+                         file: 'devpro-ms-template.tar',
+                         type: 'tar']
+                    ]
+                )
